@@ -10,7 +10,7 @@ var config = {
     get: function (key) { return Engine.ConfigDB_GetValue("user", key) },
     save: function ()
     {
-        if (this.needsToSave) Engine.ConfigDB_WriteFile("user", "config/user.cfg")
+        if (this.needsToSave) Engine.ConfigDB_SaveChanges("user", "config/user.cfg")
         if (this.needsToReloadHotkeys) Engine.ReloadHotkeys()
     }
 }
@@ -26,7 +26,7 @@ function customrating_initCheck()
 
     // Check settings
     {
-        let settings = Engine.ReadJSONFile("customrating_data/default_config.json");
+        let settings = Engine.ReadJSONFile("moddata/default_config.json");
 
         const allHotkeys = new Set(Object.keys(Engine.GetHotkeyMap()))
         // Normal check. Check for entries missing
@@ -37,13 +37,13 @@ function customrating_initCheck()
                 if (!allHotkeys.has(key.substring("hotkey.".length)))
                 {
                     config.set(key, settings[key]);
-                    state.reasons.add("New customrating hotkey(s) added.");                    
+                    state.reasons.add("New customrating hotkey(s) added.");
                 }
             }
             else if (config.get(key) == "")
             {
                 config.set(key, settings[key]);
-                state.reasons.add("New customrating settings added.");                
+                state.reasons.add("New customrating settings added.");
             }
         }
     }
@@ -58,6 +58,7 @@ function customrating_initCheck()
         }
     }
     config.save()
+
     return state;
 };
 
@@ -81,7 +82,7 @@ autociv_patchApplyN("init", function (target, that, args)
 
 
     if (state.showReadme)
-        Engine.PushGuiPage("page_customrating_readme.xml");        
+        Engine.PushGuiPage("page_customrating_readme.xml");
 
     return target.apply(that, args);
 })

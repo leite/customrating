@@ -6,5 +6,5 @@
 	"url": "https://github.com/Kampot-0ad/customrating",
 	"ignoreInCompatibilityChecks": true,
 	"author_name": "Kampot",
-	"dependencies": ["0ad=0.0.26"]
+	"dependencies": ["0ad>0.0.26"]
 }

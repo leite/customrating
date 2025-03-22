@@ -24,12 +24,10 @@ var g_IsRejoining = false;
 var g_PlayerAssignments; // used when rejoining
 var g_UserRating;
 
-
 function init(attribs)
 {
-
-	customrating(attribs);
-
+	g_UserRating = attribs.rating;
+  customrating(attribs);
 	switch (attribs.multiplayerGameType)
 	{
 	case "join":
@@ -52,15 +50,12 @@ function init(attribs)
 	case "host":
 	{
 		let hasXmppClient = Engine.HasXmppClient();
-		Engine.GetGUIObjectByName("hostSTUNWrapper").hidden = !hasXmppClient;
 		Engine.GetGUIObjectByName("hostPasswordWrapper").hidden = !hasXmppClient;
 		if (hasXmppClient)
 		{
 			Engine.GetGUIObjectByName("hostPlayerName").caption = attribs.name;
 			Engine.GetGUIObjectByName("hostServerName").caption =
 				sprintf(translate("%(name)s's game"), { "name": attribs.name });
-
-			Engine.GetGUIObjectByName("useSTUN").checked = Engine.ConfigDB_GetValue("user", "lobby.stun.enabled") == "true";
 		}
 
 		switchSetupPage("pageHost");
@@ -70,6 +65,9 @@ function init(attribs)
 		error("Unrecognised multiplayer game type: " + attribs.multiplayerGameType);
 		break;
 	}
+
+	Engine.GetGUIObjectByName("multiplayerPages").onTick = onTick.bind(null, attribs.loadSavedGame);
+	Engine.GetGUIObjectByName("continueButton").onPress = confirmSetup.bind(null, attribs.loadSavedGame);
 }
 
 function cancelSetup()
@@ -106,7 +104,7 @@ function confirmPassword()
 		switchSetupPage("pageConnecting");
 }
 
-function confirmSetup()
+function confirmSetup(loadSavedGame)
 {
 	if (!Engine.GetGUIObjectByName("pageJoin").hidden)
 	{
@@ -139,8 +137,11 @@ function confirmSetup()
 
 		let hostPlayerName = Engine.GetGUIObjectByName("hostPlayerName").caption;
 		let hostPassword = Engine.GetGUIObjectByName("hostPassword").caption;
-		if (startHost(hostPlayerName, hostServerName, getValidPort(hostPort), hostPassword))
+		if (startHost(hostPlayerName, hostServerName, getValidPort(hostPort), hostPassword,
+			loadSavedGame))
+		{
 			switchSetupPage("pageConnecting");
+		}
 	}
 }
 
@@ -152,12 +153,12 @@ function startConnectionStatus(type)
 	Engine.GetGUIObjectByName("connectionStatus").caption = translate("Connecting to server...");
 }
 
-function onTick()
+function onTick(loadSavedGame)
 {
 	if (!g_IsConnecting)
 		return;
 
-	pollAndHandleNetworkClient();
+	pollAndHandleNetworkClient(loadSavedGame);
 }
 
 function getConnectionFailReason(reason)
@@ -184,7 +185,7 @@ function reportConnectionFail(reason)
 	);
 }
 
-function pollAndHandleNetworkClient()
+function pollAndHandleNetworkClient(loadSavedGame)
 {
 	while (true)
 	{
@@ -192,7 +193,7 @@ function pollAndHandleNetworkClient()
 		if (!message)
 			break;
 
-		log(sprintf(translate("Net message: %(message)s"), { "message": uneval(message) }));
+		log(sprintf("Net message: %(message)s", { "message": uneval(message) }));
 		// If we're rejoining an active game, we don't want to actually display
 		// the game setup screen, so perform similar processing to gamesetup.js
 		// in this screen
@@ -219,7 +220,10 @@ function pollAndHandleNetworkClient()
 				{
 				case "disconnected":
 					cancelSetup();
-					reportDisconnect(message.reason, false);
+					if (message.reason === 16)
+						reportHandshakeDisconnect(message.mismatch_type, message.client_mismatch, message.server_mismatch);
+					else
+						reportDisconnect(message.reason, false);
 					return;
 
 				default:
@@ -279,21 +283,15 @@ function pollAndHandleNetworkClient()
 					break;
 
 				case "authenticated":
-					if (message.rejoining)
-					{
-						Engine.GetGUIObjectByName("connectionStatus").caption = translate("Game has already started, rejoining...");
-						g_IsRejoining = true;
-						return; // we'll process the game setup messages in the next tick
-					}
-					Engine.SwitchGuiPage("page_gamesetup.xml", {
-						"serverName": g_ServerName,
-						"hasPassword": g_ServerHasPassword
-					});
-					return; // don't process any more messages - leave them for the game GUI loop
+					handleAuthenticated(message, loadSavedGame);
+					return;
 
 				case "disconnected":
 					cancelSetup();
-					reportDisconnect(message.reason, false);
+					if (message.reason === 16)
+						reportHandshakeDisconnect(message.mismatch_type, message.client_mismatch_component, message.server_mismatch_component);
+					else
+						reportDisconnect(message.reason, false);
 					return;
 
 				default:
@@ -311,6 +309,34 @@ function pollAndHandleNetworkClient()
 			}
 		}
 	}
+}
+
+async function handleAuthenticated(message, loadSavedGame)
+{
+	if (message.rejoining)
+	{
+		Engine.GetGUIObjectByName("connectionStatus").caption =
+			translate("Game has already started, rejoining...");
+		g_IsRejoining = true;
+		return; // we'll process the game setup messages in the next tick
+	}
+	g_IsConnecting = false;
+
+	const savegameID = loadSavedGame ? await Engine.PushGuiPage("page_loadgame.xml") : undefined;
+
+	if (loadSavedGame && !savegameID)
+	{
+		Engine.DisconnectNetworkGame();
+		cancelSetup();
+		return;
+	}
+
+	Engine.SwitchGuiPage("page_gamesetup.xml", {
+		"savedGame": savegameID, // Undefined or the savegame ID
+		"serverName": g_ServerName,
+		"hasPassword": g_ServerHasPassword
+	});
+	return; // don't process any more messages - leave them for the game GUI loop
 }
 
 function switchSetupPage(newPage)
@@ -345,13 +371,13 @@ function switchSetupPage(newPage)
 	Engine.GetGUIObjectByName("continueButton").hidden = newPage == "pageConnecting" || newPage == "pagePassword";
 }
 
-function startHost(playername, servername, port, password)
+function startHost(playername, servername, port, password, loadSavedGame)
 {
 	startConnectionStatus("server");
 
-	Engine.ConfigDB_CreateAndWriteValueToFile("user", "playername.multiplayer", playername, "config/user.cfg");
-
-	Engine.ConfigDB_CreateAndWriteValueToFile("user", "multiplayerhosting.port", port, "config/user.cfg");
+	Engine.ConfigDB_CreateValue("user", "playername.multiplayer", playername);
+	Engine.ConfigDB_CreateValue("user", "multiplayerhosting.port", port);
+	Engine.ConfigDB_SaveChanges("user");
 
 	let hostFeedback = Engine.GetGUIObjectByName("hostFeedback");
 
@@ -364,11 +390,16 @@ function startHost(playername, servername, port, password)
 		return false;
 	}
 
-	let useSTUN = Engine.HasXmppClient() && Engine.GetGUIObjectByName("useSTUN").checked;
-
-	try
-	{
-		Engine.StartNetworkHost(playername + (g_UserRating ? " (" + g_UserRating + ")" : ""), port, useSTUN, password, true);
+	try {
+    warn("startNetworkHost");
+    warn(
+      playername +
+      (g_UserRating ?
+        " (" + g_UserRating + ")" :
+        "")
+    );
+		Engine.StartNetworkHost(playername + (g_UserRating ? " (" + g_UserRating + ")" : ""), port,
+			true, password, loadSavedGame, true);
 	}
 	catch (e)
 	{
@@ -417,9 +448,10 @@ function startJoin(playername, ip, port)
 		Engine.LobbySetPlayerPresence("playing");
 
 	// Only save the player name and host address if they're valid.
-	Engine.ConfigDB_CreateAndWriteValueToFile("user", "playername.multiplayer", playername, "config/user.cfg");
-	Engine.ConfigDB_CreateAndWriteValueToFile("user", "multiplayerserver", ip, "config/user.cfg");
-	Engine.ConfigDB_CreateAndWriteValueToFile("user", "multiplayerjoining.port", port, "config/user.cfg");
+	Engine.ConfigDB_CreateValue("user", "playername.multiplayer", playername);
+	Engine.ConfigDB_CreateValue("user", "multiplayerserver", ip);
+	Engine.ConfigDB_CreateValue("user", "multiplayerjoining.port", port);
+	Engine.ConfigDB_SaveChanges("user");
 	return true;
 }
 
